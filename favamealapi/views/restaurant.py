@@ -1,10 +1,12 @@
 """View module for handling requests about restaurants"""
+from crypt import methods
 from django.core.exceptions import ValidationError
 from django.http import HttpResponseServerError
 from rest_framework import serializers, status
+from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.viewsets import ViewSet
-from favamealapi.models import Restaurant
+from favamealapi.models import Restaurant, restaurant
 from favamealapi.models.favoriterestaurant import FavoriteRestaurant
 
 
@@ -15,13 +17,13 @@ class RestaurantSerializer(serializers.ModelSerializer):
         model = Restaurant
         fields = ('id', 'name', 'address', 'favorite',)
 
+
 class FaveSerializer(serializers.ModelSerializer):
     """JSON serializer for favorites"""
 
     class Meta:
         model = FavoriteRestaurant
-        fields = ('restaurant',)
-        depth = 1
+        exclude = ('restaurant', 'user')
 
 
 class RestaurantView(ViewSet):
@@ -51,16 +53,20 @@ class RestaurantView(ViewSet):
         Returns:
             Response -- JSON serialized game instance
         """
+        restaurant = Restaurant.objects.get(pk=pk)
         try:
-            restaurant = Restaurant.objects.get(pk=pk)
+            FavoriteRestaurant.objects.get(
+                restaurant=restaurant, user=request.auth.user)
 
-            # TODO: Add the correct value to the `favorite` property of the requested restaurant
+            restaurant.favorite = True
 
-            serializer = RestaurantSerializer(
-                restaurant, context={'request': request})
-            return Response(serializer.data)
-        except Exception as ex:
-            return HttpResponseServerError(ex)
+        except FavoriteRestaurant.DoesNotExist:
+            restaurant.favorite = False
+
+        serializer = RestaurantSerializer(
+            restaurant, context={'request': request})
+        
+        return Response(serializer.data)
 
     def list(self, request):
         """Handle GET requests to restaurants resource
@@ -69,13 +75,30 @@ class RestaurantView(ViewSet):
             Response -- JSON serialized list of restaurants
         """
         restaurants = Restaurant.objects.all()
+        for restaurant in restaurants:
+            try:
+                FavoriteRestaurant.objects.get(
+                    restaurant_id=restaurant.id, user=request.auth.user)
 
-        # TODO: Add the correct value to the `favorite` property of each restaurant
+                restaurant.favorite = True
 
+            except FavoriteRestaurant.DoesNotExist:
+                restaurant.favorite = False
 
-        serializer = RestaurantSerializer(restaurants, many=True, context={'request': request})
-
+        serializer = RestaurantSerializer(
+            restaurants, many=True, context={'request': request})
+        
         return Response(serializer.data)
-
-    # TODO: Write a custom action named `star` that will allow a client to
-    # send a POST and a DELETE request to /restaurant/2/star
+    
+    @action(methods=['post', 'delete'], detail=True)
+    def star(self, request, pk):
+        try:
+            restuarant_fav = FavoriteRestaurant.objects.get(
+                restaurant_id=pk, user_id=request.auth.user_id)
+            restuarant_fav.delete()
+            return Response(None, status=status.HTTP_204_NO_CONTENT)
+        except FavoriteRestaurant.DoesNotExist:
+            serializer = FaveSerializer(data=request.data)
+            serializer.is_valid(raise_exception=True)
+            serializer.save(user=request.auth.user, restaurant_id=pk)
+            return Response(serializer.data, status=status.HTTP_201_CREATED)

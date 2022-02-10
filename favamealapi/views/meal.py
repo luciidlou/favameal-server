@@ -16,7 +16,30 @@ class MealSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Meal
-        fields = ('id', 'name', 'restaurant', 'user_rating', 'avg_rating')
+        fields = ('id', 'name', 'restaurant', 'user_rating',
+                  'avg_rating', 'is_favorite')
+        depth = 1
+
+
+class CreateMealSerializer(serializers.ModelSerializer):
+    """JSON serializer for meals"""
+    restaurant = RestaurantSerializer(many=False)
+
+    class Meta:
+        model = Meal
+        fields = ('name', 'restaurant')
+
+
+class MealRatingSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = MealRating
+        fields = ('rating',)
+
+
+class MealFavoriteSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = FavoriteMeal
+        exclude = ('user', 'meal')
 
 
 class MealView(ViewSet):
@@ -30,38 +53,42 @@ class MealView(ViewSet):
         """
         meal = Meal()
         meal.name = request.data["name"]
-        meal.restaurant = Restaurant.objects.get(pk=request.data["restaurant_id"])
-
+        meal.restaurant = Restaurant.objects.get(
+            pk=request.data["restaurant"])
 
         try:
             meal.save()
-            serializer = MealSerializer(
+            serializer = CreateMealSerializer(
                 meal, context={'request': request})
             return Response(serializer.data, status=status.HTTP_201_CREATED)
         except ValidationError as ex:
             return Response({"reason": ex.message}, status=status.HTTP_400_BAD_REQUEST)
 
-    def retrieve(self, request, pk=None):
+    def retrieve(self, request, pk):
         """Handle GET requests for single meal
 
         Returns:
             Response -- JSON serialized meal instance
         """
+        meal = Meal.objects.get(pk=pk)
         try:
-            meal = Meal.objects.get(pk=pk)
+            meal_rating = MealRating.objects.get(
+                user=request.auth.user, meal=meal)
 
-            # TODO: Get the rating for current user and assign to `user_rating` property
+            meal.user_rating = meal_rating.rating
+        except MealRating.DoesNotExist:
+            meal.user_rating = 0
 
-            # TODO: Get the average rating for requested meal and assign to `avg_rating` property
+        try:
+            FavoriteMeal.objects.get(meal=meal, user=request.auth.user)
+            meal.is_favorite = True
+        except FavoriteMeal.DoesNotExist:
+            meal.is_favorite = False
 
-            # TODO: Assign a value to the `is_favorite` property of requested meal
+        serializer = MealSerializer(
+            meal, context={'request': request})
 
-
-            serializer = RestaurantSerializer(
-                meal, context={'request': request})
-            return Response(serializer.data)
-        except Exception as ex:
-            return HttpResponseServerError(ex)
+        return Response(serializer.data)
 
     def list(self, request):
         """Handle GET requests to meals resource
@@ -71,25 +98,52 @@ class MealView(ViewSet):
         """
         meals = Meal.objects.all()
 
-        # TODO: Get the rating for current user and assign to `user_rating` property
+        for meal in meals:
+            try:
+                meal_rating = MealRating.objects.get(
+                    user=request.auth.user, meal=meal)
 
-        # TODO: Get the average rating for each meal and assign to `avg_rating` property
+                meal.user_rating = meal_rating.rating
+            except MealRating.DoesNotExist:
+                meal.user_rating = 0
 
-        # TODO: Assign a value to the `is_favorite` property of each meal
+            try:
+                FavoriteMeal.objects.get(meal=meal, user=request.auth.user)
+                meal.is_favorite = True
+            except FavoriteMeal.DoesNotExist:
+                meal.is_favorite = False
 
         serializer = MealSerializer(
             meals, many=True, context={'request': request})
 
         return Response(serializer.data)
 
-    # TODO: Add a custom action named `rate` that will allow a client to send a
-    #  POST and a PUT request to /meals/3/rate with a body of..
-    #       {
-    #           "rating": 3
-    #       }
+    @action(methods=['post', 'put'], detail=True)
+    def rate(self, request, pk):
 
+        try:
+            user_rating = MealRating.objects.get(
+                meal_id=pk, user_id=request.auth.user_id)
 
+            user_rating.rating = request.data['rating']
+            user_rating.save()
+            return Response(None, status=status.HTTP_204_NO_CONTENT)
 
+        except MealRating.DoesNotExist:
+            serializer = MealRatingSerializer(data=request.data)
+            serializer.is_valid(raise_exception=True)
+            serializer.save(meal_id=pk, user=request.auth.user)
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
 
-    # TODO: Add a custom action named `star` that will allow a client to send a
-    #  POST and a DELETE request to /meals/3/star.
+    @action(methods=['post', 'delete'], detail=True)
+    def star(self, request, pk):
+        try:
+            meal_fav = FavoriteMeal.objects.get(
+                meal_id=pk, user_id=request.auth.user_id)
+            meal_fav.delete()
+            return Response(None, status=status.HTTP_204_NO_CONTENT)
+        except FavoriteMeal.DoesNotExist:
+            serializer = MealFavoriteSerializer(data=request.data)
+            serializer.is_valid(raise_exception=True)
+            serializer.save(user=request.auth.user, meal_id=pk)
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
